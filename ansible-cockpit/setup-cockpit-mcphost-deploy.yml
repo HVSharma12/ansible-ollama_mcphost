@@ -1,0 +1,135 @@
+---
+# Playbook: setup-cockpit-mcphost-deploy.yml
+# Purpose: Install a Cockpit extension that exposes deploy.sh settings and an mcphost chat console
+
+- name: Install Cockpit GUI for Ollama + mcphost
+  hosts: localhost
+  become: true
+  vars:
+    repo_root: "{{ playbook_dir | dirname }}"
+    cockpit_root: /usr/share/cockpit/ansible-ollama
+    deploy_bundle_root: /usr/local/share/ansible-ollama_mcphost
+    deploy_wrapper_path: /usr/local/bin/ansible-ollama-deploy
+    bundled_mcp_dir: "{{ deploy_bundle_root }}/roles/ansible-ollama_mcphost/mcp_servers"
+    user_mcp_dir: "/root/mcp_servers"
+    mcphost_binary: "/usr/bin/mcphost"
+    mcphost_config_path: "/root/.mcphost.yml"
+    default_model: "{{ model | default('gpt-oss:20b') }}"
+    cockpit_assets:
+      - src: "mcphost-deploy/manifest.json.j2"
+        dest: "{{ cockpit_root }}/manifest.json"
+        mode: "0644"
+      - src: "mcphost-deploy/index.html.j2"
+        dest: "{{ cockpit_root }}/index.html"
+        mode: "0644"
+      - src: "mcphost-deploy/app.js.j2"
+        dest: "{{ cockpit_root }}/app.js"
+        mode: "0644"
+      - src: "mcphost-deploy/styles.css.j2"
+        dest: "{{ cockpit_root }}/styles.css"
+        mode: "0644"
+  tasks:
+    - name: Stop PackageKit to avoid zypper lock contention
+      ansible.builtin.systemd:
+        name: packagekit
+        state: stopped
+      failed_when: false
+      changed_when: false
+
+    - name: Install Cockpit + deployment prerequisites
+      ansible.builtin.package:
+        name:
+          - cockpit
+          - cockpit-ws
+          - firewalld
+          - ansible-core
+          - python313
+          - python313-pip
+          - python3
+          - git
+          - curl
+          - unzip
+          - tar
+          - gzip
+          - make
+          - tree
+          - jq
+          - mcphost
+        state: present
+
+    - name: Enable and start Cockpit socket
+      ansible.builtin.systemd:
+        name: cockpit.socket
+        state: started
+        enabled: true
+
+    - name: Enable and start firewalld
+      ansible.builtin.systemd:
+        name: firewalld
+        state: started
+        enabled: true
+
+    - name: Ensure deployment bundle directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - "{{ deploy_bundle_root }}"
+        - "{{ deploy_bundle_root }}/roles"
+        - "{{ cockpit_root }}"
+        - "{{ user_mcp_dir }}"
+
+    - name: Copy deploy wrapper inputs (deploy.sh/deploy.yml/ansible.cfg)
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        mode: "{{ item.mode | default('0644') }}"
+      loop:
+        - { src: "{{ repo_root }}/deploy.sh", dest: "{{ deploy_bundle_root }}/deploy.sh", mode: "0755" }
+        - { src: "{{ repo_root }}/deploy.yml", dest: "{{ deploy_bundle_root }}/deploy.yml" }
+        - { src: "{{ repo_root }}/ansible.cfg", dest: "{{ deploy_bundle_root }}/ansible.cfg" }
+
+    - name: Sync ansible-ollama_mcphost role for Cockpit bundle
+      ansible.builtin.copy:
+        src: "{{ repo_root }}/roles/ansible-ollama_mcphost"
+        dest: "{{ deploy_bundle_root }}/roles/ansible-ollama_mcphost"
+        mode: preserve
+        directory_mode: "0755"
+
+    - name: Install deploy wrapper script
+      ansible.builtin.template:
+        src: deploy-wrapper.sh.j2
+        dest: "{{ deploy_wrapper_path }}"
+        mode: "0755"
+
+    - name: Render Cockpit extension config
+      ansible.builtin.template:
+        src: config.json.j2
+        dest: "{{ cockpit_root }}/config.json"
+        mode: "0644"
+
+    - name: Deploy Cockpit extension assets
+      ansible.builtin.template:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        mode: "{{ item.mode }}"
+      loop: "{{ cockpit_assets }}"
+
+    - name: Restart Cockpit socket to load extension
+      ansible.builtin.systemd:
+        name: cockpit.socket
+        state: restarted
+
+    - name: Display completion summary
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Cockpit Deploy UI Installed
+          ========================================
+          Extension path : {{ cockpit_root }}
+          Deploy wrapper : {{ deploy_wrapper_path }}
+          Bundle sources : {{ deploy_bundle_root }}
+
+          Open https://<host>:9090 → Ansible Ollama panel
+          Use the form to run deploy.sh and mcphost chat directly.

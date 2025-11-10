@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="{{ deploy_bundle_root }}"
+ANSIBLE_CONFIG="${REPO_ROOT}/ansible.cfg"
+export ANSIBLE_CONFIG
+
+cd "${REPO_ROOT}"
+exec "${REPO_ROOT}/deploy.sh" "$@"

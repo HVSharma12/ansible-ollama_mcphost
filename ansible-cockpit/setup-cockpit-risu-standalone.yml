@@ -1,0 +1,399 @@
+---
+# ============================================================================
+# Playbook: setup-cockpit-risu-standalone.yml
+# Purpose: Install a standalone Cockpit extension that provides RISU diagnostics via mcphost
+#
+# This playbook sets up a minimal Cockpit environment and installs a custom
+# extension that uses mcphost directly to run RISU diagnostics and format results.
+#
+# Usage:
+#   Install standalone RISU agent: ansible-playbook setup-cockpit-risu-standalone.yml -K
+# ============================================================================
+
+- name: Install Standalone RISU-only Cockpit Extension
+  hosts: localhost
+  become: true
+  vars:
+    # Base directory where Cockpit extensions are installed
+    cockpit_root: /usr/share/cockpit/ansible-playbook
+         
+  tasks:
+    # ========================================================================
+    # STEP 0: Stop PackageKit to prevent lock conflicts
+    # ========================================================================
+    - name: Stop PackageKit service to prevent lock conflicts
+      ansible.builtin.systemd:
+        name: packagekit
+        state: stopped
+      failed_when: false
+      changed_when: false
+      tags: ['prerequisites', 'packages']
+    
+    # ========================================================================
+    # STEP 1: Install System Prerequisites
+    # ========================================================================
+    - name: Install base system tools and Python
+      ansible.builtin.package:
+        name:
+          - python313
+          - python313-pip
+          - git
+          - curl
+          - unzip
+          - tar
+          - gzip
+          - make
+        state: present
+      tags: ['prerequisites', 'packages']
+    
+    # ========================================================================
+    # STEP 2: Install Cockpit and Required Packages
+    # ========================================================================
+    - name: Install Cockpit and supporting packages
+      ansible.builtin.package:
+        name:
+          - cockpit              # Web-based server administration interface
+          - cockpit-ws           # Cockpit WebSocket service
+          - firewalld            # Firewall management daemon
+          - jq                   # JSON processor (utility)
+          - tree                 # Directory tree viewer (utility)
+          - mcphost              # MCP client for LLM integration
+        state: present
+      tags: ['prerequisites', 'packages']
+    
+    # Enable and start Cockpit socket service
+    - name: Enable and start Cockpit socket service
+      ansible.builtin.systemd:
+        name: cockpit.socket
+        state: started
+        enabled: true
+      tags: ['prerequisites', 'services']
+    
+    # Enable and start firewalld
+    - name: Enable and start firewalld service
+      ansible.builtin.systemd:
+        name: firewalld
+        state: started
+        enabled: true
+      tags: ['prerequisites', 'services']
+    
+    # ========================================================================
+    # STEP 3: Ensure Cockpit extension directory exists
+    # ========================================================================
+    - name: Ensure Cockpit extension directory exists
+      ansible.builtin.file:
+        path: "{{ cockpit_root }}"
+        state: directory
+        mode: "0755"
+      tags: ['setup', 'directories']
+    
+    # ========================================================================
+    # STEP 4: Create manifest.json (RISU-only version)
+    # ========================================================================
+    - name: Create manifest.json (RISU-only)
+      ansible.builtin.copy:
+        dest: "{{ cockpit_root }}/manifest.json"
+        content: |
+          {
+            "version": 0,
+            "tools": {
+              "ansible-playbook": {
+                "label": "RISU Agent diagnostics",
+                "path": "index.html",
+                "icon": "applications-engineering"
+              }
+            }
+          }
+        mode: "0644"
+      tags: ['setup', 'files']
+    
+    # ========================================================================
+    # STEP 5: Create index.html (RISU-only version)
+    # ========================================================================
+    - name: Create index.html (RISU-only)
+      ansible.builtin.copy:
+        dest: "{{ cockpit_root }}/index.html"
+        content: |
+          <!doctype html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <title>RISU Agent Diagnostics</title>
+            <style>
+              body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding: 18px; }
+              .panel { max-width: 900px; }
+              label { display:block; margin-top:10px; }
+              input, select { padding:6px; width:260px; }
+              button { margin-top:12px; padding:8px 12px; }
+              pre#output { background:#111; color:#eee; padding:10px; height:320px; overflow:auto; white-space:pre-wrap; margin-top:12px; }
+              .small { font-size:0.9em; color:#666; }
+              fieldset { border:1px solid #ddd; padding:10px; margin-top:12px; }
+              .hidden { display:none !important; }
+            </style>
+          </head>
+          <body>
+            <div class="panel">
+              <h2>RISU Agent Diagnostics</h2>
+              <p class="small">Configure settings, then click <strong>Run Diagnostics</strong>.</p>
+    
+              <label>Playbook
+                <select id="playbook">
+                  <option value="risu-agent">RISU Agent diagnostics</option>
+                </select>
+              </label>
+    
+              <fieldset id="risu-agent-options">
+                <legend>RISU diagnostics</legend>
+                <label>Plugin filter (-i value)
+                  <input id="risu_plugin_filter" type="text" placeholder="core, ansible, storage …"/>
+                </label>
+                <p class="small">Leave blank to run every RISU plugin.</p>
+              </fieldset>
+    
+              <div style="margin-top:12px;">
+                <button id="deploy">Run Diagnostics</button>
+                <button id="clear">Clear Output</button>
+              </div>
+    
+              <pre id="output" aria-live="polite"></pre>
+            </div>
+    
+            <script src="../base1/cockpit.js"></script>
+            <script src="index.js"></script>
+          </body>
+          </html>
+        mode: "0644"
+      tags: ['setup', 'files']
+    
+    # ========================================================================
+    # STEP 6: Create index.js (Direct mcphost integration)
+    # ========================================================================
+    - name: Create index.js (Direct mcphost integration)
+      ansible.builtin.copy:
+        dest: "{{ cockpit_root }}/index.js"
+        content: |
+          (function () {
+            'use strict';
+            function $(id) { return document.getElementById(id); }
+
+            function appendOutput(text) {
+              const out = $('output');
+              out.textContent += text;
+              out.scrollTop = out.scrollHeight;
+            }
+            function clearOutput() { $('output').textContent = ''; }
+            function disableForm(disabled) {
+              $('deploy').disabled = disabled;
+              $('clear').disabled = disabled;
+            }
+            function setDeployLabel(sel) {
+              const map = {
+                'risu-agent': 'Run RISU Diagnostics'
+              };
+              $('deploy').textContent = map[sel] || 'Run Diagnostics';
+            }
+            function showOnly(selected) {
+              // Only one fieldset for RISU, so always show it
+              const el = $('risu-agent-options');
+              if (el) el.style.display = 'block';
+              setDeployLabel(selected);
+            }
+
+            document.addEventListener('DOMContentLoaded',function(){
+              const select=$('playbook');
+              showOnly(select.value);
+              select.addEventListener('change',()=>showOnly(select.value));
+              $('clear').addEventListener('click',clearOutput);
+
+              $('deploy').addEventListener('click',function(){
+                clearOutput();disableForm(true);
+                const choice=select.value;
+                
+                if(choice==='risu-agent'){
+                  const filter = $('risu_plugin_filter').value.trim();
+                  
+                  // Read model from config file using spawn
+                  appendOutput('>>> Loading mcphost configuration...\n');
+                  
+                  // Try to read model from config files
+                  const readModelProc = cockpit.spawn(['bash', '-c', `
+                    for config in /root/.mcphost.yml /home/*/.mcphost.yml; do
+                      if [ -f "$config" ] && grep -q "risu-agent" "$config" 2>/dev/null; then
+                        grep "^model:" "$config" | head -1 | sed 's/^model:[[:space:]]*["'\'']\\(.*\\)["'\'']/\\1/' | sed 's/^model:[[:space:]]*\\(.*\\)/\\1/'
+                        exit 0
+                      fi
+                    done
+                    echo "ollama:gpt-oss:20b"
+                  `], {err: 'ignore'});
+                  
+                  let modelOutput = '';
+                  readModelProc.stream(d => { modelOutput += String(d); });
+                  
+                  readModelProc.done(() => {
+                    const model = modelOutput.trim() || 'ollama:gpt-oss:20b';
+                    runMcphostScript(model, filter);
+                  });
+                  
+                  readModelProc.fail(() => {
+                    // Fallback to default model
+                    runMcphostScript('ollama:gpt-oss:20b', filter);
+                  });
+                  
+                  function runMcphostScript(model, filter) {
+                  // Create mcphost script dynamically
+                  const scriptContent = `---
+# RISU Diagnostics via mcphost
+model: "${model}"
+system-prompt: |
+  You are a RISU diagnostics analyst. Read the RISU JSON output and provide clear, actionable insights.
+  
+  Format your response with:
+  1. **Executive Summary** - Total plugins, execution time, overall health status
+  2. **Critical Issues** - Failed plugins (RC=1) with error messages - prioritize these
+  3. **Warnings** - Plugins with non-zero RC codes (excluding skipped RC=30)
+  4. **Key Findings** - Most important issues to address
+  5. **Recommendations** - Actionable next steps
+  
+  Be concise, clear, and focus on actionable insights. Highlight critical issues first.
+
+mcpServers:
+  risu-agent-filesystem:
+    type: "builtin"
+    name: "fs"
+    options:
+      allowed_directories:
+        - "/tmp"
+    allowedTools:
+      - "read_file"
+      - "list_directory"
+  risu-agent-bash:
+    type: "builtin"
+    name: "bash"
+    environment:
+      RISU_AGENT_ROOT: "/usr/share/risu"
+      RISU_OUTPUT_JSON: "/tmp/risu-output.json"
+      RISU_PLUGIN_FILTER: "${filter || ''}"
+    description: "Run RISU diagnostics commands"
+
+---
+
+# Run RISU diagnostics
+echo ">>> Running RISU diagnostics..."
+if [ -n "$RISU_PLUGIN_FILTER" ]; then
+  risu -l --output "$RISU_OUTPUT_JSON" -i "$RISU_PLUGIN_FILTER" 2>&1
+else
+  risu -l --output "$RISU_OUTPUT_JSON" 2>&1
+fi
+
+if [ ! -f "$RISU_OUTPUT_JSON" ]; then
+  echo "ERROR: RISU output file not found" >&2
+  exit 1
+fi
+
+echo ""
+echo ">>> RISU diagnostics completed. Analyzing results..."
+echo ""
+echo "Please read the JSON file at $RISU_OUTPUT_JSON and provide a clear, formatted summary with:"
+echo "1. Executive summary (total plugins, execution time, overall status)"
+echo "2. Critical issues (failed plugins with error messages)"
+echo "3. Warnings and info items (plugins with non-zero RC codes)"
+echo "4. Key findings (most important issues)"
+echo "5. Recommendations (actionable next steps)"
+echo ""
+echo "Format the output clearly for a system administrator."`;
+
+                  // Write script to temp file and run with mcphost
+                  const scriptPath = '/tmp/risu-cockpit-' + Date.now() + '.sh';
+                  
+                  appendOutput('>>> Running RISU diagnostics with mcphost...\n\n');
+                  
+                  // Write script file
+                  cockpit.spawn(['bash', '-c', `cat > ${scriptPath} <<'SCRIPT_EOF'\n${scriptContent}\nSCRIPT_EOF`], {
+                    err: 'out',
+                    superuser: true
+                  }).done(() => {
+                    // Run mcphost with the script (with timeout to prevent hanging)
+                    const mcphostArgs = ['timeout', '600', 'mcphost', 'script', scriptPath, '--compact'];
+                    const proc = cockpit.spawn(mcphostArgs, {
+                      err: 'out',
+                      superuser: false,
+                      environ: ['RISU_AGENT_ROOT=/usr/share/risu', 'RISU_OUTPUT_JSON=/tmp/risu-output.json', `RISU_PLUGIN_FILTER=${filter || ''}`]
+                    });
+                    
+                    // Set a timeout to kill the process if it hangs
+                    let timeoutId = setTimeout(() => {
+                      proc.close('killed');
+                      appendOutput('\n>>> WARNING: Process timed out after 10 minutes. Cleaning up...\n');
+                      cockpit.spawn(['pkill', '-f', scriptPath], {err: 'ignore'});
+                      cockpit.spawn(['rm', '-f', scriptPath], {err: 'ignore'});
+                      disableForm(false);
+                    }, 600000); // 10 minutes timeout
+                    
+                    proc.stream(d => {
+                      // Clean ANSI codes and format output
+                      let text = String(d);
+                      text = text.replace(/\x1b\[[0-9;]*m/g, '');
+                      text = text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+                      text = text.replace(/^[[:space:]]*┃[[:space:]]*/gm, '');
+                      text = text.replace(/[[:space:]]*┃[[:space:]]*$/gm, '');
+                      if (!text.match(/Error running spinner|could not open a new TTY/)) {
+                        appendOutput(text);
+                      }
+                    });
+                    
+                    proc.done(() => {
+                      clearTimeout(timeoutId);
+                      appendOutput('\n>>> RISU diagnostics completed\n');
+                      // Clean up script file
+                      cockpit.spawn(['rm', '-f', scriptPath], {err: 'ignore'});
+                      disableForm(false);
+                    });
+                    
+                    proc.fail(err => {
+                      clearTimeout(timeoutId);
+                      appendOutput('\n>>> Error: ' + JSON.stringify(err) + '\n');
+                      cockpit.spawn(['pkill', '-f', scriptPath], {err: 'ignore'});
+                      cockpit.spawn(['rm', '-f', scriptPath], {err: 'ignore'});
+                      disableForm(false);
+                    });
+                  }).fail(err => {
+                    appendOutput('\n>>> Failed to create script: ' + JSON.stringify(err) + '\n');
+                    disableForm(false);
+                  });
+                  
+                  } // end runMcphostScript function
+                  
+                  return;
+                }
+                
+                // Fallback for other playbooks (if any)
+                appendOutput('Unknown playbook: ' + choice + '\n');
+                disableForm(false);
+              });
+            });
+          })();
+        mode: "0644"
+      tags: ['setup', 'files']
+    
+    # ========================================================================
+    # STEP 7: Restart Cockpit Socket
+    # ========================================================================
+    - name: Restart Cockpit socket to pick up changes
+      ansible.builtin.systemd:
+        name: cockpit.socket
+        state: restarted
+      tags: ['services', 'restart']
+    
+    - name: Display setup summary
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          RISU Agent Standalone Setup Complete!
+          ========================================
+    
+          The standalone RISU Agent Cockpit extension has been installed.
+          You should now see "RISU Agent diagnostics" in the Cockpit web UI at https://your-server:9090.
+    
+          This extension uses mcphost directly to run RISU diagnostics and format results with LLM.
+    
+          Please refresh your browser (Ctrl+Shift+R or Cmd+Shift+R) to clear cache and see the changes.

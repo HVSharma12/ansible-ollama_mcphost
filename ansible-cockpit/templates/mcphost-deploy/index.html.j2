@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Ollama + mcphost Deploy</title>
+  <link rel="stylesheet" href="../base1/cockpit.css">
+  <link rel="stylesheet" href="styles.css">
+  <script src="../base1/cockpit.js"></script>
+</head>
+<body>
+  <main class="page">
+    <header class="page__header">
+      <div>
+        <h1>Ollama + mcphost Control Panel</h1>
+        <p>Deploy the bundled Ansible playbook with the same options exposed by <code>deploy.sh</code> and chat directly with <code>mcphost</code>.</p>
+      </div>
+      <div id="status-banner" class="banner banner--info" role="status">
+        Loading cockpit extension…
+      </div>
+    </header>
+
+    <section class="card">
+      <div class="card__header">
+        <div>
+          <h2>Deployment settings</h2>
+          <p>Translate the form below into <code>deploy.sh</code> flags and run the playbook in the background.</p>
+        </div>
+        <div class="card__header-actions">
+          <button id="refresh-servers" class="btn btn-secondary" type="button">Refresh servers</button>
+        </div>
+      </div>
+
+      <form id="deploy-form" class="form-grid">
+        <div class="field">
+          <label for="model">Model tag</label>
+          <input id="model" name="model" type="text" autocomplete="off" value="gpt-oss:20b" />
+          <small>Same syntax as <code>./deploy.sh --model</code>. Examples: <code>gpt-oss:20b</code>, <code>ollama:qwen2.5:7b</code>.</small>
+        </div>
+
+        <div class="field field--inline">
+          <label>
+            <input id="enable-gpu" type="checkbox">
+            Enable GPU acceleration
+          </label>
+          <label for="gpu-runtime" class="sr-only">GPU runtime</label>
+          <select id="gpu-runtime" disabled>
+            <option value="rocm">ROCm</option>
+            <option value="cuda">CUDA</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label>
+            <input id="auto-discover" type="checkbox">
+            Auto-discover every MCP server on disk
+          </label>
+          <small>Mirrors <code>--auto-discover</code>. When disabled you can cherry-pick server directories below.</small>
+        </div>
+
+        <fieldset class="field">
+          <legend>Bundled + user MCP server directories</legend>
+          <div id="server-options" class="server-options">
+            <p class="muted">No server directories detected yet.</p>
+          </div>
+          <small>Select directory names to pass through <code>--servers</code>. Auto-discovery is still forced on when specific directories are selected.</small>
+        </fieldset>
+
+        <div class="field">
+          <label for="api-key-env">Provider API key environment variable</label>
+          <input id="api-key-env" type="text" placeholder="e.g. OPENAI_API_KEY" autocomplete="off">
+          <small>Recommended. The playbook reads the variable when writing <code>.mcphost.yml</code>.</small>
+        </div>
+
+        <div class="field">
+          <label for="api-key">Provider API key (inline)</label>
+          <input id="api-key" type="password" autocomplete="new-password">
+          <small>Stored in the Ansible log; prefer the env var option above whenever possible.</small>
+        </div>
+
+        <div class="field">
+          <label for="system-prompt-file">System prompt file</label>
+          <input id="system-prompt-file" type="text" placeholder="/path/to/system-prompt.txt" autocomplete="off">
+          <small>Exact path passed to <code>--system-prompt-file</code>.</small>
+        </div>
+
+        <div class="field">
+          <label for="system-prompt">Inline system prompt</label>
+          <textarea id="system-prompt" rows="4" placeholder="Optional multi-line system prompt"></textarea>
+        </div>
+      </form>
+
+      <div class="card__actions">
+        <button id="deploy-run" class="btn btn-primary" type="button">Run deploy.sh</button>
+        <button id="deploy-stop" class="btn btn-secondary" type="button" disabled>Stop run</button>
+        <button id="deploy-clear" class="btn btn-ghost" type="button">Clear output</button>
+      </div>
+
+      <pre id="deploy-log" class="log" aria-live="polite"></pre>
+    </section>
+
+    <section class="card">
+      <div class="card__header">
+        <div>
+          <h2>mcphost chat</h2>
+          <p>Send one-off prompts through the installed <code>mcphost</code> CLI to confirm connectivity.</p>
+        </div>
+      </div>
+
+      <form id="chat-form" class="form-grid">
+        <div class="field">
+          <label for="chat-prompt">Prompt</label>
+          <textarea id="chat-prompt" rows="4" placeholder="Ask a question or run a task with your enabled MCP servers"></textarea>
+        </div>
+        <div class="field">
+          <label for="chat-model">Override model (optional)</label>
+          <input id="chat-model" type="text" autocomplete="off" placeholder="Use deployment default when blank">
+        </div>
+      </form>
+
+      <div class="card__actions">
+        <button id="chat-send" class="btn btn-primary" type="button">Send prompt</button>
+        <button id="chat-stop" class="btn btn-secondary" type="button" disabled>Stop chat</button>
+        <button id="chat-clear" class="btn btn-ghost" type="button">Clear chat log</button>
+      </div>
+
+      <pre id="chat-log" class="log" aria-live="polite"></pre>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

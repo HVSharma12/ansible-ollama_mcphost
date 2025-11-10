@@ -1,0 +1,399 @@
+(function () {
+  'use strict';
+
+  const CONFIG_PATH = '{{ cockpit_config_path }}';
+  const SERVER_DISCOVERY_CODE = `
+import json
+import os
+from pathlib import Path
+
+result = []
+
+def scan(label: str, env_var: str):
+    path = os.environ.get(env_var, '').strip()
+    if not path:
+        return
+    directory = Path(path)
+    if not directory.exists() or not directory.is_dir():
+        return
+    for child in sorted(directory.iterdir()):
+        if child.is_dir():
+            result.append({
+                "label": label,
+                "name": child.name,
+                "path": str(child)
+            })
+
+scan('bundled', 'BUNDLED_DIR')
+scan('user', 'USER_DIR')
+
+print(json.dumps(result))
+`.trim();
+
+  const state = {
+    config: null,
+    servers: [],
+    deployProcess: null,
+    chatProcess: null
+  };
+
+  const el = {};
+
+  document.addEventListener('DOMContentLoaded', () => {
+    cacheElements();
+    bindEvents();
+    loadConfig();
+  });
+
+  function cacheElements() {
+    el.banner = document.getElementById('status-banner');
+    el.deployForm = document.getElementById('deploy-form');
+    el.chatForm = document.getElementById('chat-form');
+    el.model = document.getElementById('model');
+    el.enableGpu = document.getElementById('enable-gpu');
+    el.gpuRuntime = document.getElementById('gpu-runtime');
+    el.autoDiscover = document.getElementById('auto-discover');
+    el.serverOptions = document.getElementById('server-options');
+    el.apiKeyEnv = document.getElementById('api-key-env');
+    el.apiKey = document.getElementById('api-key');
+    el.systemPromptFile = document.getElementById('system-prompt-file');
+    el.systemPrompt = document.getElementById('system-prompt');
+    el.refreshServers = document.getElementById('refresh-servers');
+    el.deployRun = document.getElementById('deploy-run');
+    el.deployStop = document.getElementById('deploy-stop');
+    el.deployClear = document.getElementById('deploy-clear');
+    el.deployLog = document.getElementById('deploy-log');
+    el.chatPrompt = document.getElementById('chat-prompt');
+    el.chatModel = document.getElementById('chat-model');
+    el.chatSend = document.getElementById('chat-send');
+    el.chatStop = document.getElementById('chat-stop');
+    el.chatClear = document.getElementById('chat-clear');
+    el.chatLog = document.getElementById('chat-log');
+  }
+
+  function bindEvents() {
+    el.enableGpu.addEventListener('change', syncGpuRuntimeState);
+    el.refreshServers.addEventListener('click', refreshServers);
+    el.deployRun.addEventListener('click', runDeploy);
+    el.deployStop.addEventListener('click', stopDeploy);
+    el.deployClear.addEventListener('click', () => clearLog(el.deployLog));
+    el.chatSend.addEventListener('click', sendChat);
+    el.chatStop.addEventListener('click', stopChat);
+    el.chatClear.addEventListener('click', () => clearLog(el.chatLog));
+  }
+
+  function syncGpuRuntimeState() {
+    el.gpuRuntime.disabled = !el.enableGpu.checked;
+  }
+
+  async function loadConfig() {
+    setBanner('Loading cockpit extension…', 'info');
+    try {
+      const configRaw = await cockpit.file(CONFIG_PATH, { superuser: 'try' }).read();
+      state.config = JSON.parse(configRaw || '{}');
+      if (state.config.defaultModel && !el.model.value) {
+        el.model.value = state.config.defaultModel;
+      }
+      if (state.config.defaultModel) {
+        el.chatModel.placeholder = `Default: ${state.config.defaultModel}`;
+      }
+      syncGpuRuntimeState();
+      await verifyDeployScript();
+      await refreshServers();
+      setBanner('Ready. Launch deployments directly from Cockpit.', 'info');
+    } catch (error) {
+      console.error('config load failed', error);
+      setBanner('Unable to load cockpit config. Re-run the setup playbook.', 'error');
+    }
+  }
+
+  function verifyDeployScript() {
+    if (!state.config || !state.config.deployScript) {
+      setBanner('Deployment wrapper path missing in config.json.', 'error');
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const proc = cockpit.spawn(
+        ['/usr/bin/test', '-x', state.config.deployScript],
+        { superuser: 'try', err: 'out' }
+      );
+      proc.done(() => resolve(true));
+      proc.fail(() => {
+        setBanner(`Deploy script not found at ${state.config.deployScript}`, 'warn');
+        resolve(false);
+      });
+    });
+  }
+
+  function refreshServers() {
+    if (!state.config) {
+      return Promise.resolve();
+    }
+    el.refreshServers.disabled = true;
+    const env = {
+      BUNDLED_DIR: state.config.bundledMcpDir || '',
+      USER_DIR: state.config.userMcpDir || ''
+    };
+    return new Promise((resolve, reject) => {
+      let output = '';
+      const proc = cockpit.spawn(['python3', '-c', SERVER_DISCOVERY_CODE], {
+        environ: env,
+        superuser: 'try',
+        err: 'out'
+      });
+      proc.stream((data) => {
+        output += data;
+      });
+      proc.done(() => {
+        try {
+          const existingSelection = new Set(collectSelectedServers());
+          state.servers = JSON.parse(output || '[]');
+          renderServerOptions(existingSelection);
+          resolve(state.servers);
+        } catch (parseError) {
+          console.error('Failed to parse discovery output', parseError);
+          setBanner('Unable to parse MCP server discovery output.', 'warn');
+          reject(parseError);
+        } finally {
+          el.refreshServers.disabled = false;
+        }
+      });
+      proc.fail((err) => {
+        console.error('server discovery failed', err);
+        state.servers = [];
+        renderServerOptions(new Set());
+        setBanner('Failed to discover MCP server directories.', 'warn');
+        el.refreshServers.disabled = false;
+        reject(err);
+      });
+    });
+  }
+
+  function renderServerOptions(previouslySelected) {
+    const container = el.serverOptions;
+    container.innerHTML = '';
+    if (!state.servers || state.servers.length === 0) {
+      const message = document.createElement('p');
+      message.className = 'muted';
+      message.textContent = 'No directories discovered. Add MCP servers under the bundled role or ~/mcp_servers.';
+      container.appendChild(message);
+      return;
+    }
+    state.servers.forEach((entry) => {
+      const label = document.createElement('label');
+      label.className = 'server-chip';
+      label.title = entry.path || '';
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.value = entry.name;
+      checkbox.dataset.name = entry.name;
+      if (previouslySelected.has(entry.name)) {
+        checkbox.checked = true;
+      }
+
+      const name = document.createElement('span');
+      name.textContent = entry.name;
+
+      const origin = document.createElement('span');
+      origin.className = 'origin';
+      origin.textContent = entry.label;
+
+      label.appendChild(checkbox);
+      label.appendChild(name);
+      label.appendChild(origin);
+      container.appendChild(label);
+    });
+  }
+
+  function collectSelectedServers() {
+    return Array.from(el.serverOptions.querySelectorAll('input[type="checkbox"]:checked'))
+      .map((node) => node.dataset.name)
+      .filter(Boolean)
+      .filter((name, index, self) => self.indexOf(name) === index);
+  }
+
+  function runDeploy() {
+    if (state.deployProcess) {
+      return;
+    }
+    if (!state.config || !state.config.deployScript) {
+      setBanner('Deployment script path is missing.', 'error');
+      return;
+    }
+    const args = buildDeployArgs();
+    appendLog(el.deployLog, `\n$ ${maskSecrets(args).join(' ')}\n`);
+    setDeployBusy(true);
+    const proc = cockpit.spawn(args, {
+      superuser: 'require',
+      err: 'out',
+      pty: true
+    });
+    state.deployProcess = proc;
+    proc.stream((data) => appendLog(el.deployLog, data));
+    proc.done(() => {
+      appendLog(el.deployLog, '\n✔ Deployment finished\n');
+      setDeployBusy(false);
+      state.deployProcess = null;
+    });
+    proc.fail((err) => {
+      if (err && err.problem === 'cancelled') {
+        appendLog(el.deployLog, '\n⚠ Deployment cancelled by user\n');
+      } else {
+        appendLog(el.deployLog, `\n✖ Deployment failed: ${formatError(err)}\n`);
+      }
+      setDeployBusy(false);
+      state.deployProcess = null;
+    });
+  }
+
+  function stopDeploy() {
+    if (!state.deployProcess) {
+      return;
+    }
+    state.deployProcess.close('cancelled');
+  }
+
+  function buildDeployArgs() {
+    const args = [state.config.deployScript, '--no-prompt', '--model', el.model.value.trim() || 'gpt-oss:20b'];
+    if (el.enableGpu.checked) {
+      args.push('--enable-gpu');
+      args.push('--gpu-runtime', el.gpuRuntime.value);
+    }
+    if (el.autoDiscover.checked) {
+      args.push('--auto-discover');
+    }
+    const selectedServers = collectSelectedServers();
+    if (selectedServers.length > 0) {
+      args.push('--servers', selectedServers.join(','));
+    }
+    const apiKeyEnv = el.apiKeyEnv.value.trim();
+    const apiKeyValue = el.apiKey.value.trim();
+    if (apiKeyEnv) {
+      args.push('--api-key-env-var', apiKeyEnv);
+    } else if (apiKeyValue) {
+      args.push('--api-key', apiKeyValue);
+    }
+    const promptFile = el.systemPromptFile.value.trim();
+    const promptInline = el.systemPrompt.value.trim();
+    if (promptFile) {
+      args.push('--system-prompt-file', promptFile);
+    } else if (promptInline) {
+      args.push('--system-prompt', promptInline);
+    }
+    return args;
+  }
+
+  function sendChat() {
+    if (state.chatProcess) {
+      return;
+    }
+    const prompt = el.chatPrompt.value.trim();
+    if (!prompt) {
+      appendLog(el.chatLog, 'Prompt cannot be empty.\n');
+      return;
+    }
+    const binary = state.config?.mcphostBinary || 'mcphost';
+    const args = [binary, '-p', prompt];
+    const modelOverride = el.chatModel.value.trim();
+    if (modelOverride) {
+      args.push('-m', modelOverride);
+    }
+    appendLog(el.chatLog, `\n$ ${maskSecrets(args).join(' ')}\n`);
+    setChatBusy(true);
+    const proc = cockpit.spawn(args, {
+      superuser: 'try',
+      err: 'out',
+      pty: true
+    });
+    state.chatProcess = proc;
+    proc.stream((data) => appendLog(el.chatLog, data));
+    proc.done(() => {
+      appendLog(el.chatLog, '\n✔ Chat completed\n');
+      setChatBusy(false);
+      state.chatProcess = null;
+    });
+    proc.fail((err) => {
+      if (err && err.problem === 'cancelled') {
+        appendLog(el.chatLog, '\n⚠ Chat cancelled by user\n');
+      } else {
+        appendLog(el.chatLog, `\n✖ Chat failed: ${formatError(err)}\n`);
+      }
+      setChatBusy(false);
+      state.chatProcess = null;
+    });
+  }
+
+  function stopChat() {
+    if (!state.chatProcess) {
+      return;
+    }
+    state.chatProcess.close('cancelled');
+  }
+
+  function setDeployBusy(isBusy) {
+    el.deployRun.disabled = isBusy;
+    el.deployStop.disabled = !isBusy;
+    el.refreshServers.disabled = isBusy;
+  }
+
+  function setChatBusy(isBusy) {
+    el.chatSend.disabled = isBusy;
+    el.chatStop.disabled = !isBusy;
+  }
+
+  function clearLog(node) {
+    node.textContent = '';
+  }
+
+  function appendLog(node, message) {
+    node.textContent += stripAnsi(String(message).replace(/\r/g, '\n'));
+    node.scrollTop = node.scrollHeight;
+  }
+
+  function stripAnsi(text) {
+    return text.replace(/\u001b\[[0-9;]*[a-zA-Z]/g, '');
+  }
+
+  function maskSecrets(argv) {
+    const result = [];
+    const secretFlags = new Set(['--api-key']);
+    for (let i = 0; i < argv.length; i += 1) {
+      const token = argv[i];
+      result.push(token);
+      if (secretFlags.has(token) && argv[i + 1]) {
+        result.push('********');
+        i += 1;
+      }
+    }
+    return result;
+  }
+
+  function setBanner(message, tone) {
+    const tones = ['info', 'warn', 'error'];
+    const normalizedTone = tones.includes(tone) ? tone : 'info';
+    el.banner.textContent = message;
+    el.banner.className = `banner banner--${normalizedTone}`;
+  }
+
+  function formatError(err) {
+    if (!err) {
+      return 'unknown error';
+    }
+    if (err.problem === 'not-found' && err.command) {
+      return `command not found: ${err.command}`;
+    }
+    if (typeof err === 'string') {
+      return err;
+    }
+    if (err.message) {
+      return err.message;
+    }
+    try {
+      return JSON.stringify(err);
+    } catch (_) {
+      return 'unexpected failure';
+    }
+  }
+
+})();

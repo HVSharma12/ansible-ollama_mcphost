@@ -1,0 +1,56 @@
+---
+# Playbook: uninstall-cockpit-extension.yml
+# Purpose: Completely uninstall the Cockpit Ansible extension and restore system to clean state
+
+- name: Uninstall Cockpit Ansible extension completely
+  hosts: localhost
+  become: true
+  vars:
+    cockpit_root: /usr/share/cockpit/ansible-playbook
+  tasks:
+    - name: Uninstall Cockpit Ansible extension RPM
+      community.general.zypper:
+        name: ansible-playbook-extension
+        state: absent
+      tags: ['uninstall']
+      failed_when: false
+
+    - name: Remove Cockpit extension directory (if RPM removal didn't clean it up)
+      ansible.builtin.file:
+        path: "{{ cockpit_root }}"
+        state: absent
+      tags: ['uninstall']
+      failed_when: false
+
+    - name: Remove any leftover temporary scripts
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ cockpit_root }}/bin"
+        - "{{ cockpit_root }}/ansible"
+      tags: ['uninstall']
+      failed_when: false
+
+    - name: Restart Cockpit socket
+      ansible.builtin.systemd:
+        name: cockpit.socket
+        state: restarted
+      tags: ['uninstall']
+
+    - name: Display uninstall summary
+      ansible.builtin.debug:
+        msg: |
+          ========================================
+          Cockpit Ansible Extension Uninstalled
+          ========================================
+          
+          ✅ Cockpit Ansible extension RPM has been removed (if installed)
+          ✅ Extension directory has been removed
+          ✅ All wrapper scripts have been removed
+          
+          The Cockpit web UI will no longer show the "Ansible Playbook" option.
+          
+          To reinstall:
+            ansible-playbook setup-cockpit-risu-standalone.yml -K
+
