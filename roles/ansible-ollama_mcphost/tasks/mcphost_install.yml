@@ -14,6 +14,7 @@
 - name: Cache distribution facts for repo decisions
   ansible.builtin.set_fact:
     mcphost_detected_distribution: "{{ (mcphost_os_release.stdout | default('')).split('|')[0] | default('') | lower }}"
+    mcphost_detected_distribution_version: "{{ (mcphost_os_release.stdout | default('')).split('|')[1] | default('') }}"
     mcphost_detected_distribution_major: "{{ ((mcphost_os_release.stdout | default('')).split('|')[1] | default('')).split('.')[0] | default('') }}"
   when: mcphost_os_release.stdout is defined and mcphost_os_release.stdout | length > 0
 

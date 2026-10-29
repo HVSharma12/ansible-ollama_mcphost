@@ -15,7 +15,8 @@ package_refresh_command:
 
 # SLE16-specific repository configuration
 sle16_mcp_repo_enabled: true
-sle16_mcp_repo_url: "https://download.opensuse.org/repositories/science:/machinelearning:/mcp/SLE_16.0/science:machinelearning:mcp.repo"
+sle16_mcp_repo_url: "https://download.opensuse.org/repositories/science:/machinelearning:/mcp/\
+  {{ mcphost_detected_distribution_version }}/science:machinelearning:mcp.repo"
 sle16_mcp_repo_name: "science:machinelearning:mcp"
 
 # ---------------------------------------------------------------------------

@@ -191,7 +191,7 @@ See [INSTALL.md](INSTALL.md) for detailed installation instructions.
 | `package_auto_refresh` | `true` | Auto-refresh package metadata (with key import) on zypper hosts |
 | `package_refresh_command` | `["zypper", "--non-interactive", "--gpg-auto-import-keys", "refresh"]` | Command used when refreshing packages |
 | `sle16_mcp_repo_enabled` | `true` | Automatically add SLE16 MCP repository when on SLES 16+ |
-| `sle16_mcp_repo_url` | `"https://download.opensuse.org/repositories/science:/machinelearning:/mcp/SLE_16.0/science:machinelearning:mcp.repo"` | SLE16 MCP repository URL |
+| `sle16_mcp_repo_url` | `"https://download.opensuse.org/repositories/science:/machinelearning:/mcp/{{ mcphost_detected_distribution_version }}/science:machinelearning:mcp.repo"` | SLE16 MCP repository URL |
 | `sle16_mcp_repo_name` | `"science:machinelearning:mcp"` | SLE16 MCP repository name |
 
 ### Ollama Configuration
